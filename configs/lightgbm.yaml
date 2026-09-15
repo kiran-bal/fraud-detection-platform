@@ -10,3 +10,6 @@ seed: 42
 split: {train: 0.6, valid: 0.2, test: 0.2}
 cost: {review_cost: 10.0, loss_multiplier: 1.0}
 recall_targets: [0.5, 0.7, 0.8, 0.9]
+calibration: sigmoid
+n_boot: 200
+tracking: true

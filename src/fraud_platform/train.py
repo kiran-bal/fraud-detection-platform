@@ -32,15 +32,23 @@ from fraud_platform.config import FIGURES_DIR, RUNS_DIR, RunConfig
 from fraud_platform.data.schema import TransactionSchema, validate_or_raise
 from fraud_platform.data.source import load_transactions
 from fraud_platform.data.split import time_split
+from fraud_platform.evaluation.calibration import Calibrator
 from fraud_platform.evaluation.cost import choose_threshold_by_cost, do_nothing_cost, expected_cost
 from fraud_platform.evaluation.metrics import compute_metrics
-from fraud_platform.evaluation.report import plot_cost_curve, plot_feature_importance, plot_score_distribution
+from fraud_platform.evaluation.report import (
+    plot_calibration,
+    plot_cost_curve,
+    plot_feature_importance,
+    plot_score_distribution,
+    plot_threshold_bootstrap,
+)
+from fraud_platform.evaluation.uncertainty import threshold_uncertainty
 from fraud_platform.features.pipeline import FeaturePipeline
 
 logger = logging.getLogger("fraud_platform.train")
 
 
-def run(cfg: RunConfig, df: pd.DataFrame | None = None, *, write_figures: bool = True) -> dict:
+def run(cfg: RunConfig, df: pd.DataFrame | None = None, *, write_figures: bool = True, tracking: bool | None = None) -> dict:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     np.random.seed(cfg.seed)
     schema = TransactionSchema()
@@ -68,13 +76,27 @@ def run(cfg: RunConfig, df: pd.DataFrame | None = None, *, write_figures: bool =
     model = models.build(cfg.model, **cfg.params).fit(x_train, y_train)
     fit_seconds = time.perf_counter() - t0
 
-    # Threshold on validation by cost; never touch the test block for this.
-    p_valid = model.predict_proba(x_valid)
-    threshold, curve = choose_threshold_by_cost(y_valid, p_valid, amt_valid, cfg.cost)
-    valid_metrics = compute_metrics(y_valid, p_valid, threshold, cfg.recall_targets)
+    # The validation block is split in two by time: the first half fits the
+    # calibrator, the second half chooses the threshold. Neither touches test.
+    raw_valid = model.predict_proba(x_valid)
+    half = len(split.valid) // 2
+    calibrator = Calibrator(cfg.calibration).fit(raw_valid[:half], y_valid[:half])
+    p_valid = calibrator.transform(raw_valid)
+    y_sel, p_sel, amt_sel = y_valid[half:], p_valid[half:], amt_valid[half:]
+    threshold, curve = choose_threshold_by_cost(y_sel, p_sel, amt_sel, cfg.cost)
+    valid_metrics = compute_metrics(y_sel, p_sel, threshold, cfg.recall_targets)
+    logger.info("calibration=%s on %d rows (%d frauds); threshold from %d rows (%d frauds)",
+                cfg.calibration, half, int(y_valid[:half].sum()), len(y_sel), int(y_sel.sum()))
 
-    p_test = model.predict_proba(x_test)
+    raw_test = model.predict_proba(x_test)
+    p_test = calibrator.transform(raw_test)
     test_metrics = compute_metrics(y_test, p_test, threshold, cfg.recall_targets)
+    raw_test_metrics = compute_metrics(y_test, raw_test, 0.5, cfg.recall_targets)
+    uncertainty = (
+        threshold_uncertainty(y_sel, p_sel, amt_sel, y_test, p_test, amt_test, threshold, cfg.cost,
+                              n_boot=cfg.n_boot, seed=cfg.seed)
+        if cfg.n_boot > 0 else {}
+    )
     test_cost = expected_cost(y_test, p_test, amt_test, threshold, cfg.cost)
     test_do_nothing = do_nothing_cost(y_test, amt_test, cfg.cost)
     logger.info(
@@ -87,10 +109,11 @@ def run(cfg: RunConfig, df: pd.DataFrame | None = None, *, write_figures: bool =
     # Artefacts
     model.save(run_dir / "model")
     joblib.dump(features, run_dir / "features.joblib")
+    calibrator.save(run_dir / "calibrator.joblib")
     pd.DataFrame({
         "transaction_id": split.test[schema.id_column].to_numpy(),
         "time": split.test[schema.time_column].to_numpy(),
-        "amount": amt_test, "is_fraud": y_test, "score": p_test,
+        "amount": amt_test, "is_fraud": y_test, "score": p_test, "raw_score": raw_test,
     }).to_parquet(run_dir / "test_scores.parquet", index=False)
     importance = model.feature_importance(features.feature_names) or {}
     (run_dir / "feature_importance.json").write_text(json.dumps(importance, indent=2))
@@ -109,14 +132,27 @@ def run(cfg: RunConfig, df: pd.DataFrame | None = None, *, write_figures: bool =
             plot_feature_importance(
                 importance, FIGURES_DIR / f"{cfg.name}_importance.png", f"{cfg.name}: feature importance"
             )
+        plot_calibration(
+            y_test, raw_test, p_test, FIGURES_DIR / f"{cfg.name}_calibration.png",
+            f"{cfg.name}: reliability before/after {cfg.calibration} calibration (test)",
+        )
+        if uncertainty:
+            plot_threshold_bootstrap(
+                uncertainty, threshold, FIGURES_DIR / f"{cfg.name}_threshold_bootstrap.png",
+                f"{cfg.name}: threshold and test-cost spread over {uncertainty['n_boot']} resamples",
+            )
 
     result = {
         "name": cfg.name, "model": cfg.model, "params": cfg.params, "seed": cfg.seed,
         "data_validation": validation.as_dict(), "split": summary,
         "feature_names": features.feature_names, "fit_seconds": round(fit_seconds, 2),
         "threshold": threshold,
+        "calibration": cfg.calibration,
+        "calibration_rows": {"calibrate": int(half), "select": int(len(y_sel))},
         "validation": valid_metrics.as_dict(),
         "test": test_metrics.as_dict(),
+        "test_raw": {"ece": raw_test_metrics.ece, "brier": raw_test_metrics.brier, "pr_auc": raw_test_metrics.pr_auc},
+        "uncertainty": uncertainty,
         "cost": {
             **cfg.cost.__dict__,
             "test_expected_cost": test_cost,
@@ -127,14 +163,22 @@ def run(cfg: RunConfig, df: pd.DataFrame | None = None, *, write_figures: bool =
         },
     }
     (run_dir / "metrics.json").write_text(json.dumps(result, indent=2))
+
+    if cfg.tracking if tracking is None else tracking:
+        from fraud_platform.tracking import log_run
+
+        result["mlflow_run_id"] = log_run(result, run_dir)
+        (run_dir / "metrics.json").write_text(json.dumps(result, indent=2))
+        logger.info("logged to MLflow run %s", result["mlflow_run_id"])
     return result
 
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", required=True)
+    ap.add_argument("--no-tracking", action="store_true", help="skip MLflow logging and registration")
     args = ap.parse_args(argv)
-    run(RunConfig.from_yaml(Path(args.config)))
+    run(RunConfig.from_yaml(Path(args.config)), tracking=False if args.no_tracking else None)
 
 
 if __name__ == "__main__":

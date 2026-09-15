@@ -17,3 +17,6 @@ train:               ## LightGBM candidate
 
 train-all:
 	for c in configs/*.yaml; do .venv/bin/fraud-train --config $$c; done
+
+compare:             ## reports/results.md
+	.venv/bin/fraud-compare

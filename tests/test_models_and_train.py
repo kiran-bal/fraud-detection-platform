@@ -30,7 +30,7 @@ def test_unknown_model():
 def test_end_to_end_run_and_batch_scoring(transactions, tmp_path, monkeypatch):
     monkeypatch.setattr(train, "RUNS_DIR", tmp_path / "runs")
     cfg = RunConfig(name="toy", model="lightgbm", params={"n_estimators": 80})
-    result = train.run(cfg, df=transactions, write_figures=False)
+    result = train.run(cfg, df=transactions, write_figures=False, tracking=False)
     assert result["test"]["pr_auc"] > 0.5
     assert 0 <= result["threshold"] <= 1
     assert result["cost"]["test_expected_cost"] <= result["cost"]["test_do_nothing_cost"]

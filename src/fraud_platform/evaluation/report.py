@@ -75,3 +75,49 @@ def plot_feature_importance(importance: dict[str, float], path: Path, title: str
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
+
+
+def _reliability(y: np.ndarray, p: np.ndarray, n_bins: int = 10) -> tuple[list[float], list[float]]:
+    bins = np.linspace(0, 1, n_bins + 1)
+    idx = np.clip(np.digitize(p, bins) - 1, 0, n_bins - 1)
+    xs, ys = [], []
+    for b in range(n_bins):
+        m = idx == b
+        if m.any():
+            xs.append(float(p[m].mean()))
+            ys.append(float(y[m].mean()))
+    return xs, ys
+
+
+def plot_calibration(y: np.ndarray, raw: np.ndarray, calibrated: np.ndarray, path: Path, title: str) -> None:
+    fig, ax = plt.subplots(figsize=(4.6, 4.2))
+    ax.plot([0, 1], [0, 1], linestyle="--", color=MUTED, linewidth=1)
+    for label, p, colour in (("raw", raw, WARN), ("calibrated", calibrated, ACCENT)):
+        xs, ys = _reliability(np.asarray(y), np.asarray(p))
+        ax.plot(xs, ys, marker="o", color=colour, label=label)
+    ax.set_xlabel("Predicted probability (bin mean)")
+    ax.set_ylabel("Observed fraud rate")
+    ax.set_title(title, fontsize=9)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.legend(fontsize=7, frameon=False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def plot_threshold_bootstrap(uncertainty: dict, chosen: float, path: Path, title: str) -> None:
+    t, c = uncertainty["threshold"], uncertainty["eval_cost_of_bootstrap_thresholds"]
+    fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.4))
+    for ax, (label, iv, mark) in zip(axes, (("threshold", t, chosen), ("test cost", c, None)), strict=True):
+        ax.axvspan(iv["p2_5"], iv["p97_5"], color=ACCENT, alpha=0.15, label="95% interval")
+        ax.axvline(iv["p50"], color=ACCENT, linewidth=1.2, label="median")
+        if mark is not None:
+            ax.axvline(mark, color=WARN, linestyle=":", linewidth=1.2, label="chosen")
+        ax.set_xlabel(label)
+        ax.set_yticks([])
+        ax.legend(fontsize=7, frameon=False)
+    fig.suptitle(title, fontsize=9)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)

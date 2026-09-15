@@ -1,12 +1,15 @@
-name: logreg
-model: logreg
+name: lightgbm_raw
+model: lightgbm
 params:
-  C: 0.1
-  class_weight: balanced
+  n_estimators: 600
+  learning_rate: 0.03
+  num_leaves: 31
+  min_child_samples: 50
+  scale_pos_weight: 20.0
 seed: 42
 split: {train: 0.6, valid: 0.2, test: 0.2}
 cost: {review_cost: 10.0, loss_multiplier: 1.0}
 recall_targets: [0.5, 0.7, 0.8, 0.9]
-calibration: sigmoid
+calibration: none
 n_boot: 200
 tracking: true

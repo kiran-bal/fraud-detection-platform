@@ -17,6 +17,7 @@ import pandas as pd
 
 from fraud_platform import models
 from fraud_platform.data.schema import TransactionSchema, validate_or_raise
+from fraud_platform.evaluation.calibration import Calibrator
 from fraud_platform.features.pipeline import FeaturePipeline
 
 
@@ -25,13 +26,15 @@ class Scorer:
         self.run_dir = Path(run_dir)
         self.features: FeaturePipeline = joblib.load(self.run_dir / "features.joblib")
         self.model = models.load(self.run_dir / "model")
+        cal_path = self.run_dir / "calibrator.joblib"
+        self.calibrator = Calibrator.load(cal_path) if cal_path.exists() else Calibrator("none")
         meta = json.loads((self.run_dir / "metrics.json").read_text())
         self.threshold = float(meta["threshold"])
         self.schema = TransactionSchema()
 
     def score(self, df: pd.DataFrame) -> pd.DataFrame:
         validate_or_raise(df, self.schema, training=False)
-        p = self.model.predict_proba(self.features.transform(df))
+        p = self.calibrator.transform(self.model.predict_proba(self.features.transform(df)))
         return pd.DataFrame({
             self.schema.id_column: df[self.schema.id_column].to_numpy(),
             "score": p,

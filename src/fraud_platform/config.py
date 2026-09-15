@@ -65,6 +65,12 @@ class RunConfig:
     cost: CostConfig = field(default_factory=CostConfig)
     #: Recall levels at which precision is reported.
     recall_targets: tuple[float, ...] = (0.5, 0.7, 0.8, 0.9)
+    #: none | sigmoid | isotonic. Fitted on the first (by time) half of the validation block.
+    calibration: str = "none"
+    #: Bootstrap resamples for the threshold / cost intervals. 0 disables.
+    n_boot: int = 200
+    #: Log the run to MLflow and register the model.
+    tracking: bool = True
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> RunConfig:
@@ -84,4 +90,7 @@ class RunConfig:
             "split": self.split.__dict__.copy(),
             "cost": self.cost.__dict__.copy(),
             "recall_targets": list(self.recall_targets),
+            "calibration": self.calibration,
+            "n_boot": self.n_boot,
+            "tracking": self.tracking,
         }
