@@ -1,0 +1,14 @@
+# data and run artefacts are regenerated; reports/ is committed
+data/
+runs/
+*.joblib
+*.parquet
+
+# environments and tooling
+.venv/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.DS_Store
